@@ -1,0 +1,224 @@
+﻿from __future__ import annotations
+
+from io import BytesIO
+
+import numpy as np
+import streamlit as st
+from PIL import Image
+
+from image_combiner import combine_images
+
+
+IMAGE_TYPES = ["png", "jpg", "jpeg", "bmp", "webp"]
+PREVIEW_WIDTH = 280
+
+
+def uploaded_image_to_array(uploaded_file) -> np.ndarray:
+    image = Image.open(uploaded_file).convert("RGB")
+    return np.asarray(image)
+
+
+def image_to_uint8(image: np.ndarray) -> np.ndarray:
+    arr = np.asarray(image)
+    if arr.dtype != np.uint8:
+        arr = arr.astype(float)
+        if arr.max(initial=0) <= 1.0:
+            arr = arr * 255
+    return np.clip(arr, 0, 255).astype(np.uint8)
+
+
+def image_to_png_bytes(image: np.ndarray) -> bytes:
+    output = BytesIO()
+    Image.fromarray(image_to_uint8(image)).save(output, format="PNG")
+    return output.getvalue()
+
+
+def show_image(image: np.ndarray, caption: str, width: int | None = None) -> None:
+    if width is not None:
+        st.image(image, caption=caption, width=width)
+        return
+
+    try:
+        st.image(image, caption=caption, use_container_width=True)
+    except TypeError:
+        st.image(image, caption=caption, use_column_width=True)
+
+
+def combine_manual_images(image1: np.ndarray, image2: np.ndarray, direction: str) -> np.ndarray:
+    img1 = image_to_uint8(image1)
+    img2 = image_to_uint8(image2)
+    h1, w1 = img1.shape[:2]
+    h2, w2 = img2.shape[:2]
+
+    if direction == "top_bottom":
+        canvas = np.full((h1 + h2, max(w1, w2), 3), 255, dtype=np.uint8)
+        canvas[:h1, :w1] = img1
+        canvas[h1 : h1 + h2, :w2] = img2
+        return canvas
+
+    if direction == "left_right":
+        canvas = np.full((max(h1, h2), w1 + w2, 3), 255, dtype=np.uint8)
+        canvas[:h1, :w1] = img1
+        canvas[:h2, w1 : w1 + w2] = img2
+        return canvas
+
+    raise ValueError(f"Unknown combine direction: {direction}")
+
+
+def go_to_page(page: str) -> None:
+    st.session_state["page"] = page
+    if hasattr(st, "rerun"):
+        st.rerun()
+    else:
+        st.experimental_rerun()
+
+
+def render_home_page() -> None:
+    st.title("Image Modifier")
+    st.caption("Choose a tool to start.")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("AI image combination", type="primary", key="home_ai_image_combination"):
+            go_to_page("ai_image_combination")
+    with col2:
+        if st.button("image combiner", type="primary", key="home_image_combiner"):
+            go_to_page("image_combiner")
+
+
+def render_ai_image_combination_page() -> None:
+    if st.button("Back to home", key="ai_back_home"):
+        go_to_page("home")
+
+    st.title("AI Image Combination")
+    st.caption("Upload two images. The app detects feature matches, verifies overlap with RANSAC, and stitches them when the geometry is reliable.")
+
+    with st.sidebar:
+        st.header("Matching Controls")
+        n_corners = st.slider("Corners per image", 80, 800, 300, 20)
+        ncc_radius = st.slider("NCC patch radius", 3, 20, 6, 1)
+        ncc_threshold = st.slider("NCC threshold", 0.1, 0.95, 0.65, 0.05)
+        ransac_threshold = st.slider("RANSAC threshold (px)", 1.0, 12.0, 4.0, 0.5)
+        min_inliers = st.slider("Minimum RANSAC inliers", 4, 60, 12, 1)
+        min_inlier_ratio = st.slider("Minimum inlier ratio", 0.05, 0.8, 0.25, 0.05)
+
+    col1, col2 = st.columns(2)
+    image1 = None
+    image2 = None
+
+    with col1:
+        upload1 = st.file_uploader("First image", type=IMAGE_TYPES, key="ai_image1")
+        if upload1:
+            image1 = uploaded_image_to_array(upload1)
+            show_image(image1, "First image preview", width=PREVIEW_WIDTH)
+
+    with col2:
+        upload2 = st.file_uploader("Second image", type=IMAGE_TYPES, key="ai_image2")
+        if upload2:
+            image2 = uploaded_image_to_array(upload2)
+            show_image(image2, "Second image preview", width=PREVIEW_WIDTH)
+
+    if image1 is not None and image2 is not None:
+        if st.button("Combine Images", type="primary", key="ai_combine"):
+            with st.spinner("Detecting corners, matching features, and running RANSAC..."):
+                result = combine_images(
+                    image1,
+                    image2,
+                    n_corners=n_corners,
+                    ncc_radius=ncc_radius,
+                    ncc_threshold=ncc_threshold,
+                    ransac_threshold=ransac_threshold,
+                    min_inliers=min_inliers,
+                    min_inlier_ratio=min_inlier_ratio,
+                )
+
+            if result.accepted:
+                st.success(result.message)
+                show_image(result.stitched, "Combined image")
+                st.download_button(
+                    "Download combined image",
+                    data=image_to_png_bytes(result.stitched),
+                    file_name="ai_combined_image.png",
+                    mime="image/png",
+                    key="ai_download",
+                )
+            else:
+                st.warning(result.message)
+
+            diag = result.diagnostics
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Candidate matches", int(diag["candidate_matches"]))
+            m2.metric("RANSAC inliers", int(diag["inliers"]))
+            m3.metric("Inlier ratio", f"{diag['inlier_ratio']:.2f}")
+            m4.metric("RANSAC threshold", f"{diag['ransac_threshold']:.1f}px")
+
+            with st.expander("Detailed diagnostics"):
+                st.json(diag)
+                if result.homography is not None:
+                    st.write("Homography mapping image 2 into image 1:")
+                    matrix_text = np.array2string(result.homography, precision=4, suppress_small=True)
+                    st.code(matrix_text, language="text")
+    else:
+        st.info("Choose two images to enable combining. Each uploaded image will preview immediately.")
+
+
+def render_image_combiner_page() -> None:
+    if st.button("Back to home", key="manual_back_home"):
+        go_to_page("home")
+
+    st.title("Image Combiner")
+    st.caption("Upload two images and combine them directly without AI matching or alignment.")
+
+    col1, col2 = st.columns(2)
+    image1 = None
+    image2 = None
+
+    with col1:
+        upload1 = st.file_uploader("Image 1", type=IMAGE_TYPES, key="manual_image1")
+        if upload1:
+            image1 = uploaded_image_to_array(upload1)
+            show_image(image1, "Image 1 preview", width=PREVIEW_WIDTH)
+
+    with col2:
+        upload2 = st.file_uploader("Image 2", type=IMAGE_TYPES, key="manual_image2")
+        if upload2:
+            image2 = uploaded_image_to_array(upload2)
+            show_image(image2, "Image 2 preview", width=PREVIEW_WIDTH)
+
+    if image1 is None or image2 is None:
+        st.info("Choose two images to enable top-bottom or left-right combining. Each uploaded image will preview immediately.")
+        return
+
+    top_bottom_col, left_right_col = st.columns(2)
+    with top_bottom_col:
+        combine_top_bottom = st.button("Combine top-bottom", type="primary", key="combine_top_bottom")
+    with left_right_col:
+        combine_left_right = st.button("Combine left-right", type="primary", key="combine_left_right")
+
+    if combine_top_bottom or combine_left_right:
+        direction = "top_bottom" if combine_top_bottom else "left_right"
+        output = combine_manual_images(image1, image2, direction)
+        caption = "Top-bottom combined image" if direction == "top_bottom" else "Left-right combined image"
+        file_name = "combined_top_bottom.png" if direction == "top_bottom" else "combined_left_right.png"
+
+        show_image(output, caption)
+        st.download_button(
+            "Download combined image",
+            data=image_to_png_bytes(output),
+            file_name=file_name,
+            mime="image/png",
+            key=f"manual_download_{direction}",
+        )
+
+
+st.set_page_config(page_title="Image Modifier", layout="wide")
+
+if "page" not in st.session_state:
+    st.session_state["page"] = "home"
+
+if st.session_state["page"] == "ai_image_combination":
+    render_ai_image_combination_page()
+elif st.session_state["page"] == "image_combiner":
+    render_image_combiner_page()
+else:
+    render_home_page()
