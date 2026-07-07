@@ -3,6 +3,13 @@ import unittest
 import numpy as np
 
 from image_combiner import combine_images, ncc_match, ssd_match
+from image_resizer import (
+    RESIZE_MODE_CROP,
+    RESIZE_MODE_FREE,
+    RESIZE_MODE_KEEP_ASPECT,
+    resize_image,
+    scaled_dimensions,
+)
 
 
 class MatchingTests(unittest.TestCase):
@@ -62,6 +69,47 @@ class MatchingTests(unittest.TestCase):
         )
 
         self.assertFalse(result.accepted, result.diagnostics)
+
+
+class ResizeTests(unittest.TestCase):
+    def test_free_resize_outputs_exact_requested_dimensions(self):
+        image = np.zeros((20, 40, 3), dtype=np.uint8)
+
+        resized = resize_image(image, 30, 10, RESIZE_MODE_FREE)
+
+        self.assertEqual(resized.shape, (10, 30, 3))
+        self.assertEqual(resized.dtype, np.uint8)
+
+    def test_keep_aspect_resize_fits_within_bounds(self):
+        image = np.zeros((50, 100, 3), dtype=np.uint8)
+
+        resized = resize_image(image, 80, 80, RESIZE_MODE_KEEP_ASPECT)
+
+        self.assertEqual(resized.shape, (40, 80, 3))
+        self.assertEqual(resized.dtype, np.uint8)
+
+    def test_crop_resize_outputs_exact_dimensions_from_center(self):
+        image = np.zeros((4, 8, 3), dtype=np.uint8)
+        image[:, :, 0] = np.arange(8, dtype=np.uint8)
+
+        resized = resize_image(image, 4, 4, RESIZE_MODE_CROP)
+
+        self.assertEqual(resized.shape, (4, 4, 3))
+        self.assertTrue(np.all(resized[:, 0, 0] == 2))
+        self.assertTrue(np.all(resized[:, -1, 0] == 5))
+
+    def test_resize_converts_float_grayscale_to_uint8_rgb(self):
+        image = np.ones((6, 8), dtype=float) * 0.5
+
+        resized = resize_image(image, 4, 3, RESIZE_MODE_FREE)
+
+        self.assertEqual(resized.shape, (3, 4, 3))
+        self.assertEqual(resized.dtype, np.uint8)
+
+    def test_scaled_dimensions_round_and_never_drop_below_one_pixel(self):
+        self.assertEqual(scaled_dimensions(100, 80, 0.25), (25, 20))
+        self.assertEqual(scaled_dimensions(3, 3, 0.25), (1, 1))
+        self.assertEqual(scaled_dimensions(100, 80, 1.5), (150, 120))
 
 
 if __name__ == "__main__":
