@@ -2,6 +2,7 @@ import unittest
 
 import numpy as np
 
+from extract_person import choose_sam_mask, prompt_box_from_margin, resize_for_sam, select_torch_device, to_uint8_rgb
 from image_combiner import combine_images, ncc_match, ssd_match
 from image_resizer import (
     RESIZE_MODE_CROP,
@@ -110,6 +111,73 @@ class ResizeTests(unittest.TestCase):
         self.assertEqual(scaled_dimensions(100, 80, 0.25), (25, 20))
         self.assertEqual(scaled_dimensions(3, 3, 0.25), (1, 1))
         self.assertEqual(scaled_dimensions(100, 80, 1.5), (150, 120))
+
+
+class ExtractTests(unittest.TestCase):
+    def test_prompt_box_uses_margin(self):
+        box = prompt_box_from_margin(100, 80, 0.1)
+
+        self.assertTrue(np.allclose(box, np.array([10, 8, 89, 71], dtype=float)))
+
+    def test_resize_for_sam_scales_only_large_images(self):
+        image = np.zeros((100, 200, 3), dtype=np.uint8)
+
+        resized, scale = resize_for_sam(image, 50)
+
+        self.assertEqual(resized.shape, (25, 50, 3))
+        self.assertEqual(scale, 0.25)
+
+    def test_choose_sam_mask_uses_best_valid_score(self):
+        masks = np.zeros((3, 10, 10), dtype=bool)
+        masks[0, :1, :1] = True
+        masks[1, :5, :5] = True
+        masks[2, :, :] = True
+        scores = np.array([0.99, 0.8, 0.95])
+
+        chosen = choose_sam_mask(masks, scores)
+
+        self.assertTrue(np.array_equal(chosen, masks[1]))
+
+    def test_to_uint8_rgb_converts_float_grayscale(self):
+        image = np.ones((4, 5), dtype=float) * 0.5
+
+        rgb = to_uint8_rgb(image)
+
+        self.assertEqual(rgb.shape, (4, 5, 3))
+        self.assertEqual(rgb.dtype, np.uint8)
+        self.assertEqual(int(rgb[0, 0, 0]), 127)
+
+    def test_select_torch_device_prefers_cuda(self):
+        class FakeCuda:
+            @staticmethod
+            def is_available():
+                return True
+
+            @staticmethod
+            def device_count():
+                return 1
+
+            @staticmethod
+            def current_device():
+                return 0
+
+            @staticmethod
+            def get_device_name(index):
+                return f"GPU {index}"
+
+        class FakeVersion:
+            cuda = "12.8"
+
+        class FakeTorch:
+            __version__ = "test"
+            cuda = FakeCuda()
+            version = FakeVersion()
+
+        device_info = select_torch_device(FakeTorch)
+
+        self.assertEqual(device_info["device"], "cuda")
+        self.assertTrue(device_info["cuda_available"])
+        self.assertEqual(device_info["cuda_device_name"], "GPU 0")
 
 
 if __name__ == "__main__":

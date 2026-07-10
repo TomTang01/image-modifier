@@ -34,3 +34,8 @@ desktop.ini
 # Local environment
 .env
 .env.*
+
+# Local model checkpoints
+models/
+*.pth
+*.pt

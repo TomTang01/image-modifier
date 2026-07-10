@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from io import BytesIO
 
@@ -6,6 +6,7 @@ import numpy as np
 import streamlit as st
 from PIL import Image
 
+from extract_person import SamSetupError, extract_person
 from image_combiner import combine_images
 from image_resizer import RESIZE_MODES, RESIZE_SCALES, resize_image, scaled_dimensions
 
@@ -91,7 +92,7 @@ def render_home_page() -> None:
         unsafe_allow_html=True,
     )
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         if st.button("AI image combination", type="primary", key="home_ai_image_combination"):
             go_to_page("ai_image_combination")
@@ -101,6 +102,9 @@ def render_home_page() -> None:
     with col3:
         if st.button("resize", type="primary", key="home_resize"):
             go_to_page("resize")
+    with col4:
+        if st.button("extract", type="primary", key="home_extract"):
+            go_to_page("extract")
 
 
 def render_ai_image_combination_page() -> None:
@@ -290,6 +294,59 @@ def render_resize_page() -> None:
     )
 
 
+def render_extract_page() -> None:
+    if st.button("Back to home", key="extract_back_home"):
+        go_to_page("home")
+
+    st.title("Extract")
+    st.caption("Upload a photo of a person and export a transparent PNG cutout.")
+
+    with st.sidebar:
+        st.header("Extraction Controls")
+        rect_margin_percent = st.slider("SAM prompt border margin (%)", 1, 30, 8, 1, key="extract_margin")
+        max_side = st.slider("Max SAM processing side", 512, 1536, 1024, 128, key="extract_max_side")
+        feather_radius = st.slider("Edge feather", 0, 15, 3, 1, key="extract_feather")
+
+    upload = st.file_uploader("Person photo", type=IMAGE_TYPES, key="extract_image")
+    if not upload:
+        st.info("Choose a photo to extract the person. The uploaded image will preview immediately.")
+        return
+
+    image = uploaded_image_to_array(upload)
+    show_image(image, "Original image preview", width=PREVIEW_WIDTH)
+
+    if st.button("Extract person", type="primary", key="extract_person"):
+        with st.spinner("Segmenting the person and creating a transparent cutout..."):
+            try:
+                result = extract_person(
+                    image,
+                    rect_margin=rect_margin_percent / 100,
+                    feather_radius=feather_radius,
+                    max_side=max_side,
+                )
+            except SamSetupError as exc:
+                st.error(str(exc))
+                return
+
+        st.success("Person extracted as a transparent PNG cutout.")
+        col1, col2 = st.columns(2)
+        with col1:
+            show_image(result.rgba, "Transparent cutout")
+        with col2:
+            show_image(result.mask, "Alpha mask")
+
+        st.download_button(
+            "Download transparent PNG",
+            data=image_to_png_bytes(result.rgba),
+            file_name="person_cutout.png",
+            mime="image/png",
+            key="extract_download",
+        )
+
+        with st.expander("Extraction diagnostics"):
+            st.json(result.diagnostics)
+
+
 st.set_page_config(page_title="Image Modifier", layout="wide")
 
 if "page" not in st.session_state:
@@ -301,5 +358,7 @@ elif st.session_state["page"] == "image_combiner":
     render_image_combiner_page()
 elif st.session_state["page"] == "resize":
     render_resize_page()
+elif st.session_state["page"] == "extract":
+    render_extract_page()
 else:
     render_home_page()
